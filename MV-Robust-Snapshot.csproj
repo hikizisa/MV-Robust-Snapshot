@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>MapsetVerifier.Plugin.CustomSnapshots</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="MapsetVerifier.Framework">
+      <HintPath>lib\MapsetVerifier.Framework.dll</HintPath>
+    </Reference>
+    <Reference Include="MapsetVerifier.Snapshots">
+      <HintPath>lib\MapsetVerifier.Snapshots.dll</HintPath>
+    </Reference>
+    <Reference Include="MapsetVerifier.Parser">
+      <HintPath>lib\MapsetVerifier.Parser.dll</HintPath>
+    </Reference>
+    <Reference Include="MapsetVerifier.Logging">
+      <HintPath>lib\MapsetVerifier.Logging.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+    <PackageReference Include="Serilog" Version="4.3.1" />
+  </ItemGroup>
+
+  <Target Name="CopyToCustomChecks" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(APPDATA)\Mapset Verifier Externals\CustomChecks" />
+  </Target>
+</Project>

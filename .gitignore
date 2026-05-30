@@ -1,0 +1,6 @@
+[Db]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+.idea/
