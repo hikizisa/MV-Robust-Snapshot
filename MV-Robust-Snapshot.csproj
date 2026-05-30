@@ -8,16 +8,16 @@
 
   <ItemGroup>
     <Reference Include="MapsetVerifier.Framework">
-      <HintPath>lib\MapsetVerifier.Framework.dll</HintPath>
+      <HintPath>lib/MapsetVerifier.Framework.dll</HintPath>
     </Reference>
     <Reference Include="MapsetVerifier.Snapshots">
-      <HintPath>lib\MapsetVerifier.Snapshots.dll</HintPath>
+      <HintPath>lib/MapsetVerifier.Snapshots.dll</HintPath>
     </Reference>
     <Reference Include="MapsetVerifier.Parser">
-      <HintPath>lib\MapsetVerifier.Parser.dll</HintPath>
+      <HintPath>lib/MapsetVerifier.Parser.dll</HintPath>
     </Reference>
     <Reference Include="MapsetVerifier.Logging">
-      <HintPath>lib\MapsetVerifier.Logging.dll</HintPath>
+      <HintPath>lib/MapsetVerifier.Logging.dll</HintPath>
     </Reference>
   </ItemGroup>
 
