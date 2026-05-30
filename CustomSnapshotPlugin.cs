@@ -50,6 +50,15 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     var customTranslator = new CustomTimingTranslator();
                     translators.Add(customTranslator);
                     Log.Information("[CustomSnapshotsPlugin] Registered custom TimingPoints translator successfully.");
+
+                    // Find and remove existing HitObjects translator
+                    int removedHitObjectsCount = translators.RemoveAll(t => t.Section == "HitObjects");
+                    Log.Information("[CustomSnapshotsPlugin] Removed {Count} default HitObjects translator(s).", removedHitObjectsCount);
+
+                    // Add our custom HitObjects translator
+                    var customHitObjectsTranslator = new CustomHitObjectsTranslator();
+                    translators.Add(customHitObjectsTranslator);
+                    Log.Information("[CustomSnapshotsPlugin] Registered custom HitObjects translator successfully.");
                 }
                 else
                 {
