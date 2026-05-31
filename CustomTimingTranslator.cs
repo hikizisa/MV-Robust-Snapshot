@@ -387,7 +387,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             // Detect the dominant shift via RANSAC voting across all matched pairs.
             // Independent of any hit-object shift: timing can shift without objects shifting
             // (e.g. mp3 offset adjustment on a sparse map) and vice versa.
-            var sections = BuildShiftSections(steps, globalShiftHint);
+            var sections = BuildShiftSections(steps, globalShiftHint, beatmap);
 
             var resultList = new List<DiffInstance>();
 
@@ -642,7 +642,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         // by -15ms collapse into a single "Section shifted by -15 ms" entry). Singleton
         // shifts, unmatched steps (add/remove), and the zero-shift "matched-but-unchanged"
         // group become per-step sections that the residual loop handles individually.
-        private static List<ShiftSection> BuildShiftSections(List<UnifiedStep> steps, double globalShiftHint)
+        private static List<ShiftSection> BuildShiftSections(List<UnifiedStep> steps, double globalShiftHint, Beatmap beatmap)
         {
             var clusters = new List<List<UnifiedStep>>();
             var unmatched = new List<UnifiedStep>();
@@ -656,8 +656,10 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 }
 
                 long shift = (long)System.Math.Round(step.Shift.Value);
+                double stepTime = step.NewLine?.Offset ?? step.OldLine?.Offset ?? 0;
+                double clusterTol = GetSnapTolerance(beatmap, stepTime);
                 var existing = clusters.FirstOrDefault(c =>
-                    System.Math.Abs((long)System.Math.Round(c[0].Shift!.Value) - shift) <= ShiftTolerance);
+                    System.Math.Abs((long)System.Math.Round(c[0].Shift!.Value) - shift) <= clusterTol);
                 if (existing != null) existing.Add(step);
                 else clusters.Add(new List<UnifiedStep> { step });
             }
@@ -817,7 +819,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 steps.Add(unified);
             }
 
-            var sections = BuildShiftSections(steps, globalShiftHint);
+            var sections = BuildShiftSections(steps, globalShiftHint, beatmap);
             return sections.Select(s => (s.StartTime, s.EndTime, s.Shift)).ToList();
         }
 
