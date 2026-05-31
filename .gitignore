@@ -1,6 +1,38 @@
-[Db]in/
+## Ignore Visual Studio temporary files, build results, and user-specific settings
+
+# Build results
+[Bb]in/
 [Oo]bj/
+[Ll]og/
+[Ll]ogs/
+[Ll]ib/
+
+# Visual Studio files
+.vs/
 *.user
 *.suo
-.vs/
+*.userosscache
+*.sln.docstates
+
+# Visual Studio Code files
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains Rider/Resharper
 .idea/
+*.sln.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userdiagnostics
+*.suo
+*.userosscache
