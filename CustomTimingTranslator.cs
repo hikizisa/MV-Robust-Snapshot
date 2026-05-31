@@ -467,8 +467,26 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                         }
                         else if (Math.Abs(localShift) >= 1.0)
                         {
-                            var localSign = localShift > 0 ? "+" : "";
-                            changes.Insert(0, $"Time changed from {s.OldLine.Offset} ms to {s.NewLine.Offset} ms ({localSign}{localShift:0.##} ms).");
+                            // Singleton time shift — this timing line didn't cluster into
+                            // any section. Show the shift relative to the global hint so the
+                            // user can see the deviation from the map-wide movement at a glance.
+                            // If the deviation is within snap tolerance, this is just a
+                            // normally-shifted line with no meaningful drift — suppress the
+                            // time-diff entirely (it's already implied by the global shift).
+                            double driftFromGlobal = localShift - globalShiftHint;
+                            if (Math.Abs(driftFromGlobal) <= snapTolerance)
+                            {
+                                // Within snap tolerance of global shift — no time-diff to surface.
+                            }
+                            else
+                            {
+                                var localSign = localShift > 0 ? "+" : "";
+                                var driftSign = driftFromGlobal > 0 ? "+" : "";
+                                string globalContext = Math.Abs(globalShiftHint) >= 1.0
+                                    ? $", {driftSign}{driftFromGlobal:0.##} ms from global"
+                                    : "";
+                                changes.Insert(0, $"Time changed from {s.OldLine.Offset} ms to {s.NewLine.Offset} ms ({localSign}{localShift:0.##} ms{globalContext}).");
+                            }
                         }
 
                         if (changes.Count > 0)
@@ -589,7 +607,9 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         }
 
         // +/-2ms drift is tolerated as "on the same snap" relative to a section shift.
-        // Used for RANSAC inlier counting (tight, so the average shift is precise).
+        // Used for both clustering timing lines into sections and alignment/inlier checking.
+        // Timing lines that shift by more than 2ms from the section's canonical value are
+        // reported individually. This matches the hit-objects section tolerance.
         private const double ShiftTolerance = 2.0;
 
         // RANSAC needs at least 2 matched pairs voting for the same shift to call it a section.
