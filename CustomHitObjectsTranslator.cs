@@ -108,13 +108,50 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         // matches (same problem as in TimingTranslator).
         private const double ShiftDriftWeight = 0.5;
 
+        private static bool IsExactMatch(HitObject x, HitObject y, Beatmap.Mode mode)
+        {
+            if (x.GetObjectType() != y.GetObjectType())
+                return false;
+
+            bool positionsMatch = mode switch
+            {
+                Beatmap.Mode.Taiko => true, // position irrelevant
+                Beatmap.Mode.Catch => Math.Min(Math.Abs(x.Position.X - y.Position.X), Math.Abs(x.Position.X - (512 - y.Position.X))) < 0.05,
+                Beatmap.Mode.Mania => Math.Abs(x.Position.X - y.Position.X) < 0.5,
+                _ => Math.Min(Vector2.Distance(x.Position, y.Position),
+                     Math.Min(Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, y.Position.Y)),
+                     Math.Min(Vector2.Distance(x.Position, new Vector2(y.Position.X, 384 - y.Position.Y)),
+                              Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, 384 - y.Position.Y))))) < 0.05,
+            };
+
+            bool isExactMatch = positionsMatch &&
+                                x.sampleset == y.sampleset &&
+                                x.addition == y.addition &&
+                                (x.customIndex ?? 0) == (y.customIndex ?? 0) &&
+                                (x.volume ?? 0) == (y.volume ?? 0) &&
+                                x.filename == y.filename;
+
+            if (mode == Beatmap.Mode.Taiko)
+                isExactMatch = isExactMatch && x.hitSound == y.hitSound;
+
+            if (x is Slider xs && y is Slider ys)
+            {
+                isExactMatch = isExactMatch &&
+                               xs.CurveType == ys.CurveType &&
+                               xs.EdgeAmount == ys.EdgeAmount &&
+                               xs.NodePositions.Count == ys.NodePositions.Count;
+            }
+
+            return isExactMatch;
+        }
+
         // Distance function used by DTW to pair objects across snapshots.
         // Mode-aware because each ruleset cares about different attributes:
         //   - Standard: full XY position.
         //   - Catch:    only X matters (vertical position is ignored gameplay-wise).
         //   - Taiko:    position is irrelevant; hitsounds encode the gameplay object (don/kat/finish).
         //   - Mania:    X = column (lane); same lane is a hard match, different lane heavily penalised.
-        private static double GetDistance(HitObject x, HitObject y, Beatmap.Mode mode, double globalShift)
+        private static double GetDistance(HitObject x, HitObject y, Beatmap.Mode mode, Func<double, double> getLocalShift)
         {
             double cost = 0;
 
@@ -137,7 +174,9 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     break;
 
                 case Beatmap.Mode.Catch:
-                    cost += Math.Log(1.0 + Math.Abs(x.Position.X - y.Position.X)) * 15.0;
+                    double catchDist = Math.Min(Math.Abs(x.Position.X - y.Position.X), Math.Abs(x.Position.X - (512 - y.Position.X)));
+                    if (catchDist < 0.05) catchDist = 0;
+                    cost += Math.Log(1.0 + catchDist) * 15.0;
                     break;
 
                 case Beatmap.Mode.Mania:
@@ -146,7 +185,15 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     break;
 
                 default:
-                    cost += Math.Log(1.0 + Vector2.Distance(x.Position, y.Position)) * 15.0;
+                    double dist = Vector2.Distance(x.Position, y.Position);
+                    double hFlipDist = Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, y.Position.Y));
+                    double vFlipDist = Vector2.Distance(x.Position, new Vector2(y.Position.X, 384 - y.Position.Y));
+                    double bothFlipDist = Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, 384 - y.Position.Y));
+                    
+                    double minDist = Math.Min(dist, Math.Min(hFlipDist, Math.Min(vFlipDist, bothFlipDist)));
+                    if (minDist < 0.05) minDist = 0;
+
+                    cost += Math.Log(1.0 + minDist) * 15.0;
                     break;
             }
 
@@ -177,41 +224,31 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 cost += Math.Abs(xLen - yLen) * 0.1;
             }
 
+            bool isExactMatch = IsExactMatch(x, y, mode);
+
             // 4. Penalise deviation from the dominant shift rather than raw time distance.
             // Otherwise DTW pairs an old object to a nearby unrelated new one because the
             // absolute gap is small, even though the section was shifted by, say, +2009ms.
-            double drift = (y.time - x.time) - globalShift;
-            cost += Math.Abs(drift) * ShiftDriftWeight;
-
-            // 5. Flat penalty when anything but a perfect match (mode-aware for position).
-            bool positionsMatch = mode switch
+            double drift = (y.time - x.time) - getLocalShift(x.time);
+            
+            if (isExactMatch)
             {
-                Beatmap.Mode.Taiko => true, // position irrelevant
-                Beatmap.Mode.Catch => x.Position.X == y.Position.X,
-                Beatmap.Mode.Mania => Math.Abs(x.Position.X - y.Position.X) < 0.5,
-                _ => x.Position == y.Position,
-            };
-            bool isExactMatch = x.GetObjectType() == y.GetObjectType() &&
-                                positionsMatch &&
-                                x.sampleset == y.sampleset &&
-                                x.addition == y.addition &&
-                                (x.customIndex ?? 0) == (y.customIndex ?? 0) &&
-                                (x.volume ?? 0) == (y.volume ?? 0) &&
-                                x.filename == y.filename;
-
-            if (mode == Beatmap.Mode.Taiko)
-                isExactMatch = isExactMatch && x.hitSound == y.hitSound;
-
-            if (x is Slider xs && y is Slider ys)
-            {
-                isExactMatch = isExactMatch &&
-                               xs.CurveType == ys.CurveType &&
-                               xs.EdgeAmount == ys.EdgeAmount &&
-                               xs.NodePositions.Count == ys.NodePositions.Count;
+                // Exact matches are highly prized to prevent matching unrelated stream/harmonic notes.
+                // Apply a very small linear drift penalty and NO quadratic penalty so DTW pairs them 
+                // reliably even if they drift significantly from the estimated global shift.
+                cost += Math.Abs(drift) * (ShiftDriftWeight * 0.1);
             }
-
-            if (!isExactMatch)
+            else
+            {
+                // Non-exact matches are heavily penalized for drifting in time.
+                // The quadratic term ensures far-away unrelated objects are treated as delete+insert.
+                // Q=0.05 ensures that a 115ms drift (1/4 beat at 130bpm) costs 57.5 + 661 = ~718, 
+                // which exceeds the 600 gap penalty, correctly breaking stream harmonic matching.
+                cost += Math.Abs(drift) * ShiftDriftWeight + (drift * drift) * 0.05;
+                
+                // 5. Flat penalty when anything but a perfect match.
                 cost += 20.0;
+            }
 
             return cost;
         }
@@ -220,7 +257,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             List<HitObject> oldList,
             List<HitObject> newList,
             Beatmap.Mode mode,
-            double globalShift,
+            Func<double, double> getLocalShift,
             double maxWindow = 5000.0
         )
         {
@@ -245,7 +282,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
 
                     if (timeDiff <= maxWindow)
                     {
-                        double matchCost = GetDistance(oldObj, newObj, mode, globalShift);
+                        double matchCost = GetDistance(oldObj, newObj, mode, getLocalShift);
                         double optMatch = dp[i - 1, j - 1] + matchCost;
                         double optDelete = dp[i - 1, j] + gapPenalty;
                         double optInsert = dp[i, j - 1] + gapPenalty;
@@ -275,7 +312,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
 
                     if (timeDiff <= maxWindow)
                     {
-                        double matchCost = GetDistance(oldObj, newObj, mode, globalShift);
+                        double matchCost = GetDistance(oldObj, newObj, mode, getLocalShift);
                         if (Math.Abs(dp[currI, currJ] - (dp[currI - 1, currJ - 1] + matchCost)) < 1e-5)
                         {
                             path.Add(new Tuple<int, int>(currI - 1, currJ - 1));
@@ -450,16 +487,27 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 yield break;
             }
 
-            // Parse old hit objects
-            var oldHitObjects = ParseHitObjectsFromCode(oldCode, beatmap);
-            var newHitObjects = !string.IsNullOrEmpty(newCode)
-                ? ParseHitObjectsFromCode(newCode, beatmap)
-                : beatmap.HitObjects;
+
 
             // Get shift sections from helper. The returned globalShift is the dominant
             // pairwise offset used by DTW; we re-use it below to display orphan removals
             // at their shifted time.
-            var (sections, globalShiftHint) = GetShiftSections(beatmap, oldCode, newCode);
+            var (sections, globalShiftHint, timingShift) = GetCachedShiftSections(beatmap, oldCode, newCode);
+
+            // Use the authoritative timing shift to report the global map offset change,
+            // even if the hit objects were remapped entirely resulting in globalShiftHint = 0.
+            double printShift = timingShift != 0 ? timingShift : globalShiftHint;
+            if (Math.Abs(printShift) >= 1)
+            {
+                var sign = printShift > 0 ? "+" : "";
+                yield return new DiffInstance(
+                    $"Global object offset shifted by {sign}{printShift:0.##} ms.",
+                    Section,
+                    DiffType.Changed,
+                    new List<string>(),
+                    snapshotCreationDate
+                );
+            }
 
             // Yield diffs for each section
             foreach (var section in sections)
@@ -646,7 +694,41 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         // a few coincidentally-aligned objects shouldn't trigger a shift report.
         private const int MinShiftInliersHitObjects = 5;
 
-        public static (List<ShiftSection> sections, double globalShift) GetShiftSections(
+        private static readonly Dictionary<string, (List<ShiftSection> sections, double globalShiftHint, double timingShift)> _shiftCache = new();
+
+        private static string GetCacheKey(Beatmap beatmap, string oldCode, string? newCode)
+        {
+            int oldHash = oldCode?.GetHashCode() ?? 0;
+            int newHash = newCode?.GetHashCode() ?? 0;
+            string beatmapId = beatmap.MetadataSettings.beatmapId?.ToString() ?? "unknown";
+            return $"{beatmapId}_{oldHash}_{newHash}";
+        }
+
+        public static (List<ShiftSection> sections, double globalShiftHint, double timingShift) GetCachedShiftSections(
+            Beatmap beatmap,
+            string oldCode,
+            string? newCode
+        )
+        {
+            var key = GetCacheKey(beatmap, oldCode, newCode);
+            lock (_shiftCache)
+            {
+                if (_shiftCache.TryGetValue(key, out var cached))
+                {
+                    return cached;
+                }
+                // Avoid cache growing infinitely
+                if (_shiftCache.Count > 100)
+                {
+                    _shiftCache.Clear();
+                }
+                var result = GetShiftSections(beatmap, oldCode, newCode);
+                _shiftCache[key] = result;
+                return result;
+            }
+        }
+
+        public static (List<ShiftSection> sections, double globalShiftHint, double timingShift) GetShiftSections(
             Beatmap beatmap,
             string oldCode,
             string? newCode
@@ -654,23 +736,129 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         {
             var mode = beatmap.GeneralSettings.mode;
 
-            var oldHitObjects = ParseHitObjectsFromCode(oldCode, beatmap);
-            var newHitObjects = !string.IsNullOrEmpty(newCode)
-                ? ParseHitObjectsFromCode(newCode, beatmap)
-                : beatmap.HitObjects;
+            Beatmap? oldBeatmap = null;
+            if (!string.IsNullOrEmpty(oldCode))
+            {
+                try
+                {
+                    oldBeatmap = new Beatmap(oldCode, "dummy", $"dummy_{Guid.NewGuid():N}.osu");
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "Could not parse old beatmap snapshot");
+                }
+            }
 
-            // Estimate the dominant shift via a histogram across all candidate pairs,
-            // so DTW prefers matches whose shift agrees with the global consensus over
-            // cheap-but-wrong local matches.
-            double globalShiftHint = ShiftRansac.EstimateGlobalShift(
-                oldHitObjects, newHitObjects,
-                h => h.time, h => h.time,
-                (o, n) => o.GetObjectType() == n.GetObjectType(),
+            Beatmap? newBeatmap = null;
+            if (!string.IsNullOrEmpty(newCode))
+            {
+                try
+                {
+                    newBeatmap = new Beatmap(newCode, "dummy", $"dummy_{Guid.NewGuid():N}.osu");
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "Could not parse new beatmap snapshot");
+                }
+            }
+
+            var oldHitObjects = oldBeatmap?.HitObjects ?? new List<HitObject>();
+            var newHitObjects = newBeatmap?.HitObjects ?? beatmap.HitObjects;
+            var oldTimingLines = oldBeatmap?.TimingLines ?? new List<TimingLine>();
+            var newTimingLines = newBeatmap?.TimingLines ?? beatmap.TimingLines;
+
+            var (timingShift, _) = ShiftRansac.EstimateGlobalShift(
+                oldTimingLines, newTimingLines,
+                t => t.Offset, t => t.Offset,
+                (o, n) => o.Uninherited == n.Uninherited,
                 5000.0
             );
 
+            // Estimate the dominant shift via a histogram across all candidate pairs.
+            // First, prioritize exact matches (position + type + extras) so DTW doesn't get tricked
+            // into cheap-but-wrong local matches (e.g. matching +125ms stream notes instead of the exact note).
+            var (exactShift, exactCount) = ShiftRansac.EstimateGlobalShift(
+                oldHitObjects, newHitObjects,
+                h => h.time, h => h.time,
+                (o, n) => IsExactMatch(o, n, mode),
+                5000.0
+            );
+
+            double globalShiftHint = exactShift;
+
+            if (exactCount < 5)
+            {
+                // Fallback 1: Timing Lines. Timing lines are sparse and immune to stream harmonics.
+                if (timingShift != 0)
+                {
+                    globalShiftHint = timingShift;
+                }
+                else
+                {
+                    // Fallback 2: New Combos.
+                    var (ncShift, ncCount) = ShiftRansac.EstimateGlobalShift(
+                        oldHitObjects, newHitObjects,
+                        h => h.time, h => h.time,
+                        (o, n) => o.type.HasFlag(HitObject.Types.NewCombo) && n.type.HasFlag(HitObject.Types.NewCombo),
+                        5000.0
+                    );
+
+                    if (ncCount >= 3)
+                    {
+                        globalShiftHint = ncShift;
+                    }
+                    else
+                    {
+                        // Last resort: simple type matching
+                        globalShiftHint = ShiftRansac.EstimateGlobalShift(
+                            oldHitObjects, newHitObjects,
+                            h => h.time, h => h.time,
+                            (o, n) => o.GetObjectType() == n.GetObjectType(),
+                            5000.0
+                        ).shift;
+                    }
+                }
+            }
+
+            // Align timing lines to build the timing-grid shift resolver.
+            var sortedOldTimingLines = oldTimingLines.OrderBy(l => l.Offset).ToList();
+            var sortedNewTimingLines = newTimingLines.OrderBy(l => l.Offset).ToList();
+            var timingAlignment = CustomTimingTranslator.AlignTimingLines(sortedOldTimingLines, sortedNewTimingLines, globalShiftHint, 5000.0);
+
+            var timingLineShifts = new Dictionary<int, double>();
+            foreach (var match in timingAlignment)
+            {
+                if (match.Item1 != -1 && match.Item2 != -1)
+                {
+                    var oldLine = sortedOldTimingLines[match.Item1];
+                    var newLine = sortedNewTimingLines[match.Item2];
+                    timingLineShifts[match.Item1] = newLine.Offset - oldLine.Offset;
+                }
+            }
+
+            Func<double, double> getLocalShift = time =>
+            {
+                int activeIndex = -1;
+                double maxOffset = double.MinValue;
+                for (int i = 0; i < sortedOldTimingLines.Count; i++)
+                {
+                    var line = sortedOldTimingLines[i];
+                    if (line.Offset <= time + ShiftTolerance && line.Offset > maxOffset)
+                    {
+                        maxOffset = line.Offset;
+                        activeIndex = i;
+                    }
+                }
+
+                if (activeIndex != -1 && timingLineShifts.TryGetValue(activeIndex, out double localShift))
+                {
+                    return localShift;
+                }
+                return globalShiftHint;
+            };
+
             // Align old and new hit objects using DTW (Needleman-Wunsch with a time window).
-            var alignment = AlignHitObjects(oldHitObjects, newHitObjects, mode, globalShiftHint, 5000.0);
+            var alignment = AlignHitObjects(oldHitObjects, newHitObjects, mode, getLocalShift, 5000.0);
 
             // Convert alignment into UnifiedSteps.
             var steps = new List<UnifiedStep>();
@@ -781,7 +969,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 sections.Add(sec);
             }
 
-            return (sections.OrderBy(s => s.StartTime).ToList(), globalShiftHint);
+            return (sections.OrderBy(s => s.StartTime).ToList(), globalShiftHint, timingShift);
         }
 
         private static string? GetTaikoHitSoundChange(
@@ -843,13 +1031,59 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             return prefix + hitSoundName + suffix + ".";
         }
 
-        private static IEnumerable<string> GetChanges(
+        internal static IEnumerable<string> GetChanges(
             HitObject addedObject,
             HitObject removedObject,
             Beatmap beatmap
         )
         {
-            if (addedObject.Position != removedObject.Position)
+            bool isHorizontalFlip = Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05 && Math.Abs(addedObject.Position.Y - removedObject.Position.Y) < 0.05;
+            bool isVerticalFlip = Math.Abs(addedObject.Position.X - removedObject.Position.X) < 0.05 && Math.Abs(addedObject.Position.Y - (384 - removedObject.Position.Y)) < 0.05;
+            bool isBothFlip = Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05 && Math.Abs(addedObject.Position.Y - (384 - removedObject.Position.Y)) < 0.05;
+            bool isCatchHorizontalFlip = beatmap.GeneralSettings.mode == Beatmap.Mode.Catch && Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05;
+
+            bool isPositionIdentical = Vector2.Distance(addedObject.Position, removedObject.Position) < 0.05;
+            if (isPositionIdentical && addedObject is Slider addedSl && removedObject is Slider removedSl)
+            {
+                if (addedSl.NodePositions.Count == removedSl.NodePositions.Count)
+                {
+                    for (int i = 1; i < addedSl.NodePositions.Count; i++)
+                    {
+                        if (Vector2.Distance(addedSl.NodePositions[i], removedSl.NodePositions[i]) >= 0.05)
+                        {
+                            isPositionIdentical = false;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    isPositionIdentical = false;
+                }
+            }
+
+            if (isPositionIdentical)
+            {
+                isHorizontalFlip = false;
+                isVerticalFlip = false;
+                isBothFlip = false;
+                isCatchHorizontalFlip = false;
+            }
+
+            if (isBothFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch)
+            {
+                yield return "Flipped horizontally and vertically.";
+            }
+            else if ((isHorizontalFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch) || isCatchHorizontalFlip)
+            {
+                yield return "Flipped horizontally.";
+            }
+            else if (isVerticalFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch)
+            {
+                yield return "Flipped vertically.";
+            }
+            else if (Vector2.Distance(addedObject.Position, removedObject.Position) >= 0.05)
+            {
                 yield return "Moved from ("
                     + removedObject.Position.X
                     + "; "
@@ -859,6 +1093,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     + "; "
                     + addedObject.Position.Y
                     + ").";
+            }
 
             if (addedObject.hitSound != removedObject.hitSound)
             {
@@ -1044,20 +1279,64 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
 
                 if (addedSlider.NodePositions.Count == removedSlider.NodePositions.Count)
                 {
-                    // The first node is the start, which we already checked.
-                    for (var i = 1; i < addedSlider.NodePositions.Count; ++i)
-                        if (addedSlider.NodePositions[i] != removedSlider.NodePositions[i])
-                            yield return "Node "
-                                + (i + 1)
-                                + " moved from ("
-                                + removedSlider.NodePositions[i].X
-                                + "; "
-                                + removedSlider.NodePositions[i].Y
-                                + ") to ("
-                                + addedSlider.NodePositions[i].X
-                                + "; "
-                                + addedSlider.NodePositions[i].Y
-                                + ").";
+                    bool nodesMatchFlip = false;
+                    if (isBothFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch)
+                    {
+                        nodesMatchFlip = true;
+                        for (var i = 1; i < addedSlider.NodePositions.Count; ++i)
+                        {
+                            if (Math.Abs(addedSlider.NodePositions[i].X - (512 - removedSlider.NodePositions[i].X)) >= 0.05 ||
+                                Math.Abs(addedSlider.NodePositions[i].Y - (384 - removedSlider.NodePositions[i].Y)) >= 0.05)
+                            {
+                                nodesMatchFlip = false;
+                                break;
+                            }
+                        }
+                    }
+                    else if ((isHorizontalFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch) || isCatchHorizontalFlip)
+                    {
+                        nodesMatchFlip = true;
+                        for (var i = 1; i < addedSlider.NodePositions.Count; ++i)
+                        {
+                            if (Math.Abs(addedSlider.NodePositions[i].X - (512 - removedSlider.NodePositions[i].X)) >= 0.05 ||
+                                (beatmap.GeneralSettings.mode != Beatmap.Mode.Catch && Math.Abs(addedSlider.NodePositions[i].Y - removedSlider.NodePositions[i].Y) >= 0.05))
+                            {
+                                nodesMatchFlip = false;
+                                break;
+                            }
+                        }
+                    }
+                    else if (isVerticalFlip && beatmap.GeneralSettings.mode != Beatmap.Mode.Catch)
+                    {
+                        nodesMatchFlip = true;
+                        for (var i = 1; i < addedSlider.NodePositions.Count; ++i)
+                        {
+                            if (Math.Abs(addedSlider.NodePositions[i].X - removedSlider.NodePositions[i].X) >= 0.05 ||
+                                Math.Abs(addedSlider.NodePositions[i].Y - (384 - removedSlider.NodePositions[i].Y)) >= 0.05)
+                            {
+                                nodesMatchFlip = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!nodesMatchFlip)
+                    {
+                        // The first node is the start, which we already checked.
+                        for (var i = 1; i < addedSlider.NodePositions.Count; ++i)
+                            if (Vector2.Distance(addedSlider.NodePositions[i], removedSlider.NodePositions[i]) >= 0.05)
+                                yield return "Node "
+                                    + (i + 1)
+                                    + " moved from ("
+                                    + removedSlider.NodePositions[i].X
+                                    + "; "
+                                    + removedSlider.NodePositions[i].Y
+                                    + ") to ("
+                                    + addedSlider.NodePositions[i].X
+                                    + "; "
+                                    + addedSlider.NodePositions[i].Y
+                                    + ").";
+                    }
                 }
                 else
                 {
@@ -1212,3 +1491,4 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         }
     }
 }
+// Force rebuild
