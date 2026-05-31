@@ -574,18 +574,20 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                         {
                             if (!aligned)
                             {
-                                var localSign = driftFromSection > 0 ? "+" : "";
-                                // If the object's new time is still on a valid snap, treat
-                                // the drift as a re-snap (timing adjustment) and route it to
-                                // the Timing tab as its own entry. Property changes stay
-                                // on Hit Objects.
+                                // driftFromSection is relative to the cluster's representative
+                                // shift. But report relative to the authoritative global shift
+                                // so users can directly see how far this object deviates from
+                                // the map-wide shift (e.g. "+25 ms from global" when global is
+                                // +2009ms and this object shifted by +2034ms).
+                                double driftFromGlobal = localShift - globalShiftHint;
+                                var globalSign = driftFromGlobal > 0 ? "+" : "";
                                 if (IsOnSnap(beatmap, s.NewObj.time))
                                 {
-                                    // Display under the Timing tab. The Snapshotter only
-                                    // auto-rewrites Section when it still matches the input
-                                    // section, so using "Timing" here keeps it routed.
+                                    // On-snap: the new position aligns with a beat divisor.
+                                    // Route to Timing tab — this is a deliberate re-snap, not
+                                    // an error. Show deviation from global for easy comparison.
                                     yield return new DiffInstance(
-                                        stampObj + $"Object re-snapped by {localSign}{driftFromSection:0.##} ms (total shift {localShift:0.##} ms).",
+                                        stampObj + $"Object re-snapped by {globalSign}{driftFromGlobal:0.##} ms from global (total shift {localShift:0.##} ms).",
                                         "Timing",
                                         DiffType.Changed,
                                         new List<string>(),
@@ -594,23 +596,28 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                                 }
                                 else
                                 {
-                                    changes.Insert(0, $"Time drifts from section shift by {localSign}{driftFromSection:0.##} ms (object shift {localShift:0.##} ms).");
+                                    // Off-snap: the object ended up unsnapped — flag it here
+                                    // on the Hit Objects tab so it's clearly actionable.
+                                    changes.Insert(0, $"Time shifted by {globalSign}{driftFromGlobal:0.##} ms from global, unsnapped (total shift {localShift:0.##} ms).");
                                 }
                             }
                             // else: aligned -> covered by the section shift entry, skip time note.
                         }
                         else if (Math.Abs(localShift) >= 1.0)
                         {
-                            // Singleton time shift (didn't cluster into any section). If
-                            // the new time is snap-aligned, treat it as a timing change
-                            // (e.g. one object nudged by a beat division) and route it to
-                            // the Timing tab. Only fall back to a hit-object Time-changed
-                            // note when the new time is genuinely off-snap.
+                            // Singleton time shift (didn't cluster into any section).
+                            // Show the shift relative to the global hint so the user can see
+                            // the actual deviation from the map-wide movement at a glance.
+                            double driftFromGlobal = localShift - globalShiftHint;
                             var localSign = localShift > 0 ? "+" : "";
+                            var driftSign = driftFromGlobal > 0 ? "+" : "";
+                            string globalContext = Math.Abs(globalShiftHint) >= 1.0
+                                ? $", {driftSign}{driftFromGlobal:0.##} ms from global"
+                                : "";
                             if (IsOnSnap(beatmap, s.NewObj.time))
                             {
                                 yield return new DiffInstance(
-                                    stampObj + $"Object re-snapped by {localSign}{localShift:0.##} ms.",
+                                    stampObj + $"Object re-snapped by {localSign}{localShift:0.##} ms{globalContext}.",
                                     "Timing",
                                     DiffType.Changed,
                                     new List<string>(),
@@ -619,7 +626,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                             }
                             else
                             {
-                                changes.Insert(0, $"Time changed from {s.OldObj.time} ms to {s.NewObj.time} ms ({localSign}{localShift:0.##} ms).");
+                                changes.Insert(0, $"Time changed from {s.OldObj.time} ms to {s.NewObj.time} ms ({localSign}{localShift:0.##} ms{globalContext}).");
                             }
                         }
 
@@ -643,7 +650,10 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         }
 
         // +/-2ms drift is tolerated as "on the same snap" relative to a section shift.
-        // Used for RANSAC inlier counting (tight, so the average shift is precise).
+        // Used for both clustering objects into sections and alignment/inlier checking.
+        // Objects that shift by more than 2ms from the section's canonical value are
+        // emitted as per-object diffs (re-snapped or unsnapped) rather than being merged
+        // into the section. This keeps sections exclusive and clearly bounded.
         private const double ShiftTolerance = 2.0;
 
         // Per-step drift report uses 1/32 of the active beat as tolerance, absorbing
