@@ -882,11 +882,13 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 steps.Add(unified);
             }
 
-            // Cluster shifts greedily within +/-ShiftTolerance. Any cluster with at least
-            // MinShiftInliersHitObjects members becomes its own section, so a group of
-            // objects shifted uniformly is collapsed into a single shift entry rather than
-            // emitting one Changed entry per object. Mania chord notes are deduplicated by
-            // old.time so a single chord doesn't multi-count toward the inlier threshold.
+            // Cluster steps by shift value. Two steps belong to the same section when their
+            // shifts are within snap tolerance of each other — i.e. both shifts are plausible
+            // outcomes of re-snapping to the same beat grid, just to different sub-divisions.
+            // We use the snap tolerance at the new object's time (1/32 of the beat) so the
+            // threshold scales naturally with BPM instead of being a fixed magic constant.
+            // ShiftTolerance (2ms) is used separately for the per-object alignment check
+            // (deciding whether a specific object is 'on the section shift' and thus silent).
             var seenManiaChordTimes = mode == Beatmap.Mode.Mania ? new HashSet<double>() : null;
             var clusters = new List<List<UnifiedStep>>();
             var unmatched = new List<UnifiedStep>();
@@ -900,8 +902,10 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 }
 
                 long shift = (long)Math.Round(step.Shift.Value);
+                double stepTime = step.NewObj?.time ?? step.OldObj?.time ?? 0;
+                double clusterTol = GetSnapTolerance(beatmap, stepTime);
                 var existing = clusters.FirstOrDefault(c =>
-                    Math.Abs((long)Math.Round(c[0].Shift!.Value) - shift) <= ShiftTolerance);
+                    Math.Abs((long)Math.Round(c[0].Shift!.Value) - shift) <= clusterTol);
                 if (existing != null) existing.Add(step);
                 else clusters.Add(new List<UnifiedStep> { step });
             }
