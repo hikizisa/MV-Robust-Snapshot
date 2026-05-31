@@ -7,6 +7,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="MV-Robust-Snapshot.Tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MV-Robust-Snapshot.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="MapsetVerifier.Framework">
       <HintPath>lib/MapsetVerifier.Framework.dll</HintPath>
     </Reference>
@@ -26,7 +36,7 @@
     <PackageReference Include="Serilog" Version="4.3.1" />
   </ItemGroup>
 
-  <Target Name="CopyToCustomChecks" AfterTargets="Build">
+  <Target Name="CopyToCustomChecks" AfterTargets="Build" Condition="'$(SkipCustomChecksCopy)' != 'true'">
     <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(APPDATA)\Mapset Verifier Externals\CustomChecks" />
   </Target>
 </Project>
