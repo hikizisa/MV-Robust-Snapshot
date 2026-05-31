@@ -118,7 +118,7 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             return cost;
         }
 
-        private static List<Tuple<int, int>> AlignTimingLines(
+        internal static List<Tuple<int, int>> AlignTimingLines(
             List<TimingLine> oldList,
             List<TimingLine> newList,
             double globalShift,
@@ -364,16 +364,10 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 ? ParseTimingLinesFromCode(newCode, beatmap)
                 : beatmap.TimingLines;
 
-            // Estimate the dominant shift first via a histogram over all candidate pairs.
-            // DTW then uses this as a bias so it picks correctly-shifted matches even when
-            // one side has many extra inserted lines (e.g. volume ramps without an old
-            // counterpart) that would otherwise look like cheap local matches.
-            double globalShiftHint = ShiftRansac.EstimateGlobalShift(
-                oldTimingLines, newTimingLines,
-                l => l.Offset, l => l.Offset,
-                (o, n) => o.Uninherited == n.Uninherited,
-                5000.0
-            );
+            // Use hit objects as the primary/fixed criteria to estimate the global shift.
+            // Under osu!, timing and hit objects shift together. Estimating them independently
+            // can result in inconsistent alignment, especially on maps with sparse timing points.
+            double globalShiftHint = CustomHitObjectsTranslator.GetCachedShiftSections(beatmap, oldCode, newCode).globalShiftHint;
 
             // Align old and new timing lines
             var alignment = AlignTimingLines(oldTimingLines, newTimingLines, globalShiftHint, 5000.0);
@@ -395,6 +389,8 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             // (e.g. mp3 offset adjustment on a sparse map) and vice versa.
             var sections = BuildShiftSections(steps, globalShiftHint);
 
+            var resultList = new List<DiffInstance>();
+
             // Yield diffs for each section
             foreach (var section in sections)
             {
@@ -406,13 +402,13 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     var stamp = Timestamp.Get(section.StartTime);
                     var sign = section.Shift > 0 ? "+" : "";
 
-                    yield return new DiffInstance(
+                    resultList.Add(new DiffInstance(
                         stamp + $"Section shifted in time by {sign}{section.Shift:0.##} ms ({matchedCount} timing points).",
                         Section,
                         DiffType.Changed,
                         new List<string>(),
                         snapshotCreationDate
-                    );
+                    ));
                 }
 
                 // Emit residuals flat (separate entries, never nested inside the shift summary):
@@ -431,24 +427,24 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                         // original pre-shift timestamp appended in parentheses for cross-
                         // reference against the old beatmap.
                         var (prefix, suffix) = BuildRemovedStamp(s.OldLine.Offset, globalShiftHint);
-                        yield return new DiffInstance(
+                        resultList.Add(new DiffInstance(
                             prefix + typeObj + " removed" + suffix + ".",
                             Section,
                             DiffType.Removed,
                             new List<string>(),
                             snapshotCreationDate
-                        );
+                        ));
                     }
                     else if (s.OldLine == null && s.NewLine != null)
                     {
                         var stampObj = Timestamp.Get(s.NewLine.Offset);
-                        yield return new DiffInstance(
+                        resultList.Add(new DiffInstance(
                             stampObj + typeObj + " added.",
                             Section,
                             DiffType.Added,
                             new List<string>(),
                             snapshotCreationDate
-                        );
+                        ));
                     }
                     else if (s.OldLine != null && s.NewLine != null)
                     {
@@ -480,15 +476,114 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                             // Always keep the line type in the title so single-change
                             // entries (e.g. only a volume diff) stay obviously tied to a
                             // timing line rather than floating standalone.
-                            yield return new DiffInstance(
+                            resultList.Add(new DiffInstance(
                                 stampObj + typeObj + " changed.",
                                 Section,
                                 DiffType.Changed,
                                 changes,
                                 snapshotCreationDate
-                            );
+                            ));
                         }
                     }
+                }
+            }
+
+            // 1. Identify groupable diffs and map them to their category and transition
+            var groupInfoMap = new Dictionary<DiffInstance, (string category, string transition)>();
+            var categoryLists = new Dictionary<string, List<DiffInstance>>();
+
+            foreach (var diff in resultList)
+            {
+                if (diff.DiffType == DiffType.Changed && diff.Details != null && diff.Details.Count == 1)
+                {
+                    var info = GetCategoryAndTransition(diff.Details[0]);
+                    if (info != null)
+                    {
+                        groupInfoMap[diff] = info.Value;
+                        if (!categoryLists.ContainsKey(info.Value.category))
+                        {
+                            categoryLists[info.Value.category] = new List<DiffInstance>();
+                        }
+                        categoryLists[info.Value.category].Add(diff);
+                    }
+                }
+            }
+
+            // 2. For each category, group consecutive diffs with the same transition
+            var diffToGroupMap = new Dictionary<DiffInstance, List<DiffInstance>>();
+
+            foreach (var kvp in categoryLists)
+            {
+                var category = kvp.Key;
+                var categoryDiffs = kvp.Value;
+
+                var currentGroup = new List<DiffInstance>();
+                string currentTransition = "";
+
+                foreach (var diff in categoryDiffs)
+                {
+                    string transition = groupInfoMap[diff].transition;
+                    if (currentGroup.Count == 0 || transition == currentTransition)
+                    {
+                        currentGroup.Add(diff);
+                        currentTransition = transition;
+                    }
+                    else
+                    {
+                        if (currentGroup.Count > 1)
+                        {
+                            foreach (var member in currentGroup)
+                            {
+                                diffToGroupMap[member] = currentGroup;
+                            }
+                        }
+                        currentGroup = new List<DiffInstance> { diff };
+                        currentTransition = transition;
+                    }
+                }
+
+                if (currentGroup.Count > 1)
+                {
+                    foreach (var member in currentGroup)
+                    {
+                        diffToGroupMap[member] = currentGroup;
+                    }
+                }
+            }
+
+            // 3. Yield results, collapsing groups with > 1 element
+            var yieldedGroups = new HashSet<List<DiffInstance>>();
+
+            foreach (var diff in resultList)
+            {
+                if (diffToGroupMap.TryGetValue(diff, out var group))
+                {
+                    if (!yieldedGroups.Contains(group))
+                    {
+                        yieldedGroups.Add(group);
+
+                        // Collapse this group
+                        var info = groupInfoMap[group[0]];
+                        string cleanTransition = info.transition.TrimEnd('.');
+                        string groupMsg = $"{info.category} changed {cleanTransition} for {group.Count} timing points.";
+
+                        var details = group.Select(item => {
+                            var stamp = GetTimestampPrefix(item.Diff);
+                            return $"{stamp}{item.Details[0]}";
+                        }).ToList();
+
+                        yield return new DiffInstance(
+                            groupMsg,
+                            Section,
+                            DiffType.Changed,
+                            details,
+                            snapshotCreationDate
+                        );
+                    }
+                }
+                else
+                {
+                    yield return diff;
                 }
             }
         }
@@ -674,6 +769,80 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     + addedLine.SvMult
                     + ".";
             }
+        }
+
+        public static List<(double StartTime, double EndTime, double Shift)> GetTimingShiftSections(
+            Beatmap beatmap,
+            string oldCode,
+            string? newCode
+        )
+        {
+            var oldTimingLines = ParseTimingLinesFromCode(oldCode, beatmap);
+            var newTimingLines = !string.IsNullOrEmpty(newCode)
+                ? ParseTimingLinesFromCode(newCode, beatmap)
+                : beatmap.TimingLines;
+
+            double globalShiftHint = CustomHitObjectsTranslator.GetCachedShiftSections(beatmap, oldCode, newCode).globalShiftHint;
+
+            var alignment = AlignTimingLines(oldTimingLines, newTimingLines, globalShiftHint, 5000.0);
+
+            var steps = new List<UnifiedStep>();
+            foreach (var step in alignment)
+            {
+                var unified = new UnifiedStep();
+                if (step.Item1 != -1)
+                    unified.OldLine = oldTimingLines[step.Item1];
+                if (step.Item2 != -1)
+                    unified.NewLine = newTimingLines[step.Item2];
+                steps.Add(unified);
+            }
+
+            var sections = BuildShiftSections(steps, globalShiftHint);
+            return sections.Select(s => (s.StartTime, s.EndTime, s.Shift)).ToList();
+        }
+
+        private static string GetTimestampPrefix(string message)
+        {
+            int idx = message.IndexOf(" - ");
+            if (idx != -1)
+            {
+                return message.Substring(0, idx + 3);
+            }
+            return "";
+        }
+
+        private static (string category, string transition)? GetCategoryAndTransition(string detail)
+        {
+            string[] prefixes = new[]
+            {
+                "Volume changed ",
+                "Slider velocity multiplier changed ",
+                "BPM changed ",
+                "Sampleset changed ",
+                "Custom sampleset index changed ",
+                "Kiai changed ",
+                "Timing signature changed "
+            };
+
+            string[] categories = new[]
+            {
+                "Volume",
+                "Slider velocity multiplier",
+                "BPM",
+                "Sampleset",
+                "Custom sampleset index",
+                "Kiai",
+                "Timing signature"
+            };
+
+            for (int i = 0; i < prefixes.Length; i++)
+            {
+                if (detail.StartsWith(prefixes[i]))
+                {
+                    return (categories[i], detail.Substring(prefixes[i].Length));
+                }
+            }
+            return null;
         }
     }
 }
