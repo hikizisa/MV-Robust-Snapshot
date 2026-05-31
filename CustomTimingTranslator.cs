@@ -389,6 +389,40 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             // (e.g. mp3 offset adjustment on a sparse map) and vice versa.
             var sections = BuildShiftSections(steps, globalShiftHint, beatmap);
 
+            // Build a governing-shift timeline from real section shifts so singletons
+            // can show the expected timestamp based on the locally-applicable shift
+            // rather than just the map-wide global average.
+            // Key = minimum old-line offset in the section (old-time ordering).
+            var governingShifts = sections
+                .Where(sec =>
+                {
+                    int mc = sec.Steps.Count(st =>
+                        st.Shift != null && Math.Abs(st.Shift.Value - sec.Shift) <= ShiftTolerance);
+                    return Math.Abs(sec.Shift) >= 1.0 && mc >= MinShiftInliers;
+                })
+                .Select(sec =>
+                {
+                    double oldStart = sec.Steps
+                        .Where(st => st.OldLine != null)
+                        .Select(st => st.OldLine!.Offset)
+                        .DefaultIfEmpty(sec.StartTime - sec.Shift)
+                        .Min();
+                    return (oldStart, sec.Shift);
+                })
+                .OrderBy(x => x.oldStart)
+                .ToList();
+
+            double GetGoverningShift(double oldTime)
+            {
+                double result = globalShiftHint;
+                foreach (var (oldStart, shift) in governingShifts)
+                {
+                    if (oldStart <= oldTime) result = shift;
+                    else break;
+                }
+                return result;
+            }
+
             var resultList = new List<DiffInstance>();
 
             // Yield diffs for each section
@@ -462,32 +496,37 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                             if (!aligned)
                             {
                                 var localSign = driftFromSection > 0 ? "+" : "";
-                                changes.Insert(0, $"Time drifts from section shift by {localSign}{driftFromSection:0.##} ms (line shift {localShift:0.##} ms).");
+                                double expectedTime = s.OldLine.Offset + section.Shift;
+                                string expectedStamp = Timestamp.Get(expectedTime).TrimEnd(' ', '-');
+                                changes.Insert(0, $"Time drifts from section shift by {localSign}{driftFromSection:0.##} ms (line shift {localShift:0.##} ms, expected {expectedStamp}).");
                             }
                         }
                         else if (Math.Abs(localShift) >= 1.0)
                         {
-                            // Singleton time shift — this timing line didn't cluster into
-                            // any section. Show the shift relative to the global hint so the
-                            // user can see the deviation from the map-wide movement at a glance.
-                            // If the deviation is within snap tolerance, this is just a
-                            // normally-shifted line with no meaningful drift — suppress the
-                            // time-diff entirely (it's already implied by the global shift).
-                            double driftFromGlobal = localShift - globalShiftHint;
-                            if (Math.Abs(driftFromGlobal) <= snapTolerance)
+                            // Singleton time shift — this timing line didn't cluster into any
+                            // section. Use the governing section shift at this line's old position
+                            // (not just the global average) for both the drift and expected stamp.
+                            double governingShift = GetGoverningShift(s.OldLine.Offset);
+                            double singletonDrift = localShift - governingShift;
+                            if (Math.Abs(singletonDrift) <= snapTolerance)
                             {
-                                // Within snap tolerance of global shift — no time-diff to surface.
+                                // Within snap tolerance of the governing section shift — silent.
                             }
                             else
                             {
                                 var localSign = localShift > 0 ? "+" : "";
-                                var driftSign = driftFromGlobal > 0 ? "+" : "";
-                                string globalContext = Math.Abs(globalShiftHint) >= 1.0
-                                    ? $", {driftSign}{driftFromGlobal:0.##} ms from global"
-                                    : "";
-                                changes.Insert(0, $"Time changed from {s.OldLine.Offset} ms to {s.NewLine.Offset} ms ({localSign}{localShift:0.##} ms{globalContext}).");
+                                var driftSign = singletonDrift > 0 ? "+" : "";
+                                string sectionContext = "";
+                                if (Math.Abs(governingShift) >= 1.0)
+                                {
+                                    double expectedTime = s.OldLine.Offset + governingShift;
+                                    string expectedStamp = Timestamp.Get(expectedTime).TrimEnd(' ', '-');
+                                    sectionContext = $", {driftSign}{singletonDrift:0.##} ms from section (expected {expectedStamp})";
+                                }
+                                changes.Insert(0, $"Time changed from {s.OldLine.Offset} ms to {s.NewLine.Offset} ms ({localSign}{localShift:0.##} ms{sectionContext}).");
                             }
                         }
+
 
                         if (changes.Count > 0)
                         {

@@ -574,20 +574,17 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                         {
                             if (!aligned)
                             {
-                                // driftFromSection is relative to the cluster's representative
-                                // shift. But report relative to the authoritative global shift
-                                // so users can directly see how far this object deviates from
-                                // the map-wide shift (e.g. "+25 ms from global" when global is
-                                // +2009ms and this object shifted by +2034ms).
-                                double driftFromGlobal = localShift - globalShiftHint;
-                                var globalSign = driftFromGlobal > 0 ? "+" : "";
+                                // driftFromSection is relative to the cluster's canonical shift.
+                                // Use that (not globalShiftHint) for the expected position so
+                                // it reflects the section-local timing, not the global average.
+                                var sectionSign = driftFromSection > 0 ? "+" : "";
+                                double expectedObjTime = s.OldObj.time + section.Shift;
+                                string expectedStamp = Timestamp.Get(expectedObjTime).TrimEnd(' ', '-');
                                 if (IsOnSnap(beatmap, s.NewObj.time))
                                 {
-                                    // On-snap: the new position aligns with a beat divisor.
-                                    // Route to Timing tab — this is a deliberate re-snap, not
-                                    // an error. Show deviation from global for easy comparison.
+                                    // On-snap: deliberate re-snap, route to Timing tab.
                                     yield return new DiffInstance(
-                                        stampObj + $"Object re-snapped by {globalSign}{driftFromGlobal:0.##} ms from global (total shift {localShift:0.##} ms).",
+                                        stampObj + $"Object re-snapped by {sectionSign}{driftFromSection:0.##} ms from section (total shift {localShift:0.##} ms, expected {expectedStamp}).",
                                         "Timing",
                                         DiffType.Changed,
                                         new List<string>(),
@@ -596,9 +593,8 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                                 }
                                 else
                                 {
-                                    // Off-snap: the object ended up unsnapped — flag it here
-                                    // on the Hit Objects tab so it's clearly actionable.
-                                    changes.Insert(0, $"Time shifted by {globalSign}{driftFromGlobal:0.##} ms from global, unsnapped (total shift {localShift:0.##} ms).");
+                                    // Off-snap: unsnapped — flag on Hit Objects tab.
+                                    changes.Insert(0, $"Time shifted by {sectionSign}{driftFromSection:0.##} ms from section, unsnapped (total shift {localShift:0.##} ms, expected {expectedStamp}).");
                                 }
                             }
                             // else: aligned -> covered by the section shift entry, skip time note.
