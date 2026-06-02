@@ -901,7 +901,13 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 double stepTime = step.NewObj?.time ?? step.OldObj?.time ?? 0;
                 double clusterTol = GetSnapTolerance(beatmap, stepTime);
                 var existing = clusters.FirstOrDefault(c =>
-                    Math.Abs((long)Math.Round(c[0].Shift!.Value) - shift) <= clusterTol);
+                {
+                    long cShift = (long)Math.Round(c[0].Shift!.Value);
+                    double tol = (Math.Abs(cShift) <= ShiftTolerance || Math.Abs(shift) <= ShiftTolerance)
+                        ? ShiftTolerance
+                        : clusterTol;
+                    return Math.Abs(cShift - shift) <= tol;
+                });
                 if (existing != null) existing.Add(step);
                 else clusters.Add(new List<UnifiedStep> { step });
             }

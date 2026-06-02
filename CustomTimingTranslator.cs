@@ -698,7 +698,13 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 double stepTime = step.NewLine?.Offset ?? step.OldLine?.Offset ?? 0;
                 double clusterTol = GetSnapTolerance(beatmap, stepTime);
                 var existing = clusters.FirstOrDefault(c =>
-                    System.Math.Abs((long)System.Math.Round(c[0].Shift!.Value) - shift) <= clusterTol);
+                {
+                    long cShift = (long)System.Math.Round(c[0].Shift!.Value);
+                    double tol = (System.Math.Abs(cShift) <= ShiftTolerance || System.Math.Abs(shift) <= ShiftTolerance)
+                        ? ShiftTolerance
+                        : clusterTol;
+                    return System.Math.Abs(cShift - shift) <= tol;
+                });
                 if (existing != null) existing.Add(step);
                 else clusters.Add(new List<UnifiedStep> { step });
             }
