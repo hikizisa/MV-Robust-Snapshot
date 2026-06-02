@@ -36,7 +36,7 @@
     <PackageReference Include="Serilog" Version="4.3.1" />
   </ItemGroup>
 
-  <Target Name="CopyToCustomChecks" AfterTargets="Build" Condition="'$(SkipCustomChecksCopy)' != 'true'">
+  <Target Name="CopyToCustomChecks" AfterTargets="Build" Condition="'$(SkipCustomChecksCopy)' != 'true' and '$(APPDATA)' != ''">
     <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(APPDATA)\Mapset Verifier Externals\CustomChecks" />
   </Target>
 </Project>
