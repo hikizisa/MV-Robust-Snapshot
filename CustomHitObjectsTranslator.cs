@@ -108,20 +108,32 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
         // matches (same problem as in TimingTranslator).
         private const double ShiftDriftWeight = 0.5;
 
+        private static Vector2 GetUnstackedPosition(HitObject obj)
+        {
+            if (obj is Stackable stackable)
+            {
+                return stackable.UnstackedPosition;
+            }
+            return obj.Position;
+        }
+
         private static bool IsExactMatch(HitObject x, HitObject y, Beatmap.Mode mode)
         {
             if (x.GetObjectType() != y.GetObjectType())
                 return false;
 
+            var xPos = GetUnstackedPosition(x);
+            var yPos = GetUnstackedPosition(y);
+
             bool positionsMatch = mode switch
             {
                 Beatmap.Mode.Taiko => true, // position irrelevant
-                Beatmap.Mode.Catch => Math.Min(Math.Abs(x.Position.X - y.Position.X), Math.Abs(x.Position.X - (512 - y.Position.X))) < 0.05,
-                Beatmap.Mode.Mania => Math.Abs(x.Position.X - y.Position.X) < 0.5,
-                _ => Math.Min(Vector2.Distance(x.Position, y.Position),
-                     Math.Min(Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, y.Position.Y)),
-                     Math.Min(Vector2.Distance(x.Position, new Vector2(y.Position.X, 384 - y.Position.Y)),
-                              Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, 384 - y.Position.Y))))) < 0.05,
+                Beatmap.Mode.Catch => Math.Min(Math.Abs(xPos.X - yPos.X), Math.Abs(xPos.X - (512 - yPos.X))) < 0.05,
+                Beatmap.Mode.Mania => Math.Abs(xPos.X - yPos.X) < 0.5,
+                _ => Math.Min(Vector2.Distance(xPos, yPos),
+                     Math.Min(Vector2.Distance(xPos, new Vector2(512 - yPos.X, yPos.Y)),
+                     Math.Min(Vector2.Distance(xPos, new Vector2(yPos.X, 384 - yPos.Y)),
+                              Vector2.Distance(xPos, new Vector2(512 - yPos.X, 384 - yPos.Y))))) < 0.05,
             };
 
             bool isExactMatch = positionsMatch &&
@@ -165,6 +177,9 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                 return 1e9;
             }
 
+            var xPos = GetUnstackedPosition(x);
+            var yPos = GetUnstackedPosition(y);
+
             // 1. Spatial term, mode-aware.
             switch (mode)
             {
@@ -174,21 +189,21 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     break;
 
                 case Beatmap.Mode.Catch:
-                    double catchDist = Math.Min(Math.Abs(x.Position.X - y.Position.X), Math.Abs(x.Position.X - (512 - y.Position.X)));
+                    double catchDist = Math.Min(Math.Abs(xPos.X - yPos.X), Math.Abs(xPos.X - (512 - yPos.X)));
                     if (catchDist < 0.05) catchDist = 0;
                     cost += Math.Log(1.0 + catchDist) * 15.0;
                     break;
 
                 case Beatmap.Mode.Mania:
                     // Different lane is essentially a different object.
-                    if (Math.Abs(x.Position.X - y.Position.X) > 0.5) cost += 200.0;
+                    if (Math.Abs(xPos.X - yPos.X) > 0.5) cost += 200.0;
                     break;
 
                 default:
-                    double dist = Vector2.Distance(x.Position, y.Position);
-                    double hFlipDist = Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, y.Position.Y));
-                    double vFlipDist = Vector2.Distance(x.Position, new Vector2(y.Position.X, 384 - y.Position.Y));
-                    double bothFlipDist = Vector2.Distance(x.Position, new Vector2(512 - y.Position.X, 384 - y.Position.Y));
+                    double dist = Vector2.Distance(xPos, yPos);
+                    double hFlipDist = Vector2.Distance(xPos, new Vector2(512 - yPos.X, yPos.Y));
+                    double vFlipDist = Vector2.Distance(xPos, new Vector2(yPos.X, 384 - yPos.Y));
+                    double bothFlipDist = Vector2.Distance(xPos, new Vector2(512 - yPos.X, 384 - yPos.Y));
                     
                     double minDist = Math.Min(dist, Math.Min(hFlipDist, Math.Min(vFlipDist, bothFlipDist)));
                     if (minDist < 0.05) minDist = 0;
@@ -1053,12 +1068,15 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             Beatmap beatmap
         )
         {
-            bool isHorizontalFlip = Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05 && Math.Abs(addedObject.Position.Y - removedObject.Position.Y) < 0.05;
-            bool isVerticalFlip = Math.Abs(addedObject.Position.X - removedObject.Position.X) < 0.05 && Math.Abs(addedObject.Position.Y - (384 - removedObject.Position.Y)) < 0.05;
-            bool isBothFlip = Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05 && Math.Abs(addedObject.Position.Y - (384 - removedObject.Position.Y)) < 0.05;
-            bool isCatchHorizontalFlip = beatmap.GeneralSettings.mode == Beatmap.Mode.Catch && Math.Abs(addedObject.Position.X - (512 - removedObject.Position.X)) < 0.05;
+            var addedPos = GetUnstackedPosition(addedObject);
+            var removedPos = GetUnstackedPosition(removedObject);
 
-            bool isPositionIdentical = Vector2.Distance(addedObject.Position, removedObject.Position) < 0.05;
+            bool isHorizontalFlip = Math.Abs(addedPos.X - (512 - removedPos.X)) < 0.05 && Math.Abs(addedPos.Y - removedPos.Y) < 0.05;
+            bool isVerticalFlip = Math.Abs(addedPos.X - removedPos.X) < 0.05 && Math.Abs(addedPos.Y - (384 - removedPos.Y)) < 0.05;
+            bool isBothFlip = Math.Abs(addedPos.X - (512 - removedPos.X)) < 0.05 && Math.Abs(addedPos.Y - (384 - removedPos.Y)) < 0.05;
+            bool isCatchHorizontalFlip = beatmap.GeneralSettings.mode == Beatmap.Mode.Catch && Math.Abs(addedPos.X - (512 - removedPos.X)) < 0.05;
+
+            bool isPositionIdentical = Vector2.Distance(addedPos, removedPos) < 0.05;
             if (isPositionIdentical && addedObject is Slider addedSl && removedObject is Slider removedSl)
             {
                 if (addedSl.NodePositions.Count == removedSl.NodePositions.Count)
@@ -1098,16 +1116,16 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
             {
                 yield return "Flipped vertically.";
             }
-            else if (Vector2.Distance(addedObject.Position, removedObject.Position) >= 0.05)
+            else if (Vector2.Distance(addedPos, removedPos) >= 0.05)
             {
                 yield return "Moved from ("
-                    + removedObject.Position.X
+                    + removedPos.X
                     + "; "
-                    + removedObject.Position.Y
+                    + removedPos.Y
                     + ") to ("
-                    + addedObject.Position.X
+                    + addedPos.X
                     + "; "
-                    + addedObject.Position.Y
+                    + addedPos.Y
                     + ").";
             }
 
