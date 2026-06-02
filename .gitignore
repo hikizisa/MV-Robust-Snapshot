@@ -36,3 +36,13 @@ Thumbs.db
 *.userdiagnostics
 *.suo
 *.userosscache
+
+# Test results and data
+[Tt]est[Rr]esults/
+[Ss]napshots/
+*.osu
+*.zip
+*.osz
+[Tt]est[Dd]ata/
+[Tt]est-[Dd]ata/
+
