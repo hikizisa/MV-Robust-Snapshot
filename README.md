@@ -44,7 +44,16 @@ This will produce the compiled assembly `MapsetVerifier.Plugin.CustomSnapshots.d
    - **Windows**: `%APPDATA%\Mapset Verifier Externals\CustomChecks\`
    - **Linux**: `~/.local/share/Mapset Verifier Externals/CustomChecks/`
 
-> **Note**: For convenience on Windows, the project is configured with a post-build script that automatically copies the built DLL into the standard `%APPDATA%` path on successful build.
+The bundled `lib/` references target the older .NET 9 host. Build against the assemblies and .NET target of the installed Mapset Verifier version before deploying: a host API change such as `TimingLine.SvMult` changing from `float` to `double` is binary incompatible even when the assembly names match.
+
+For a .NET 10 installation, set `HostAssemblyDirectory` to a directory containing the matching host DLLs (extract them first if the host is published as a single executable):
+
+```powershell
+dotnet restore -p:TargetFramework=net10.0
+dotnet build -c Release --no-restore -p:TargetFramework=net10.0 -p:HostAssemblyDirectory="C:\path\to\matching-host-assemblies" -p:DeployPlugin=true
+```
+
+Automatic installation is opt-in through `DeployPlugin=true`, so a normal development build cannot overwrite an installed plugin with an incompatible build.
 
 3. Restart Mapset Verifier. The application logs will display:
    ```text
