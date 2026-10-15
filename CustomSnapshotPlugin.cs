@@ -59,6 +59,10 @@ namespace MapsetVerifier.Plugin.CustomSnapshots
                     var customHitObjectsTranslator = new CustomHitObjectsTranslator();
                     translators.Add(customHitObjectsTranslator);
                     Log.Information("[CustomSnapshotsPlugin] Registered custom HitObjects translator successfully.");
+
+                    translators.RemoveAll(t => t.Section == "Events");
+                    translators.Add(new CustomEventsTranslator());
+                    Log.Information("[CustomSnapshotsPlugin] Registered custom Events translator successfully.");
                 }
                 else
                 {
